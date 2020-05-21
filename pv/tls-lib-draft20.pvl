@@ -132,10 +132,19 @@ otherwise forall k:privkey, x:bitstring;
 
 
 (********************************************************)
-(* Long term keys *)
+(* Delegated Credentials  *)
 (********************************************************)
 
 type prin.
+type cred.
+
+table delegatedCredentials(prin, pubkey, prin, privkey, rsa_alg, bitstring).
+
+event DCIssued(pubkey, pubkey).
+(********************************************************)
+(* Long term keys *)
+(********************************************************)
+
 table longTermKeys(prin,privkey,pubkey).
 
 type preSharedKey.
@@ -146,6 +155,7 @@ reduc forall b:bitstring; psk2b(PSK(b)) = b
 otherwise psk2b(NoPSK) = zero.
 
 table preSharedKeys(prin,prin,preSharedKey).
+
 
 event Reachable(bitstring).
 event WeakOrCompromisedKey(pubkey).
@@ -168,7 +178,15 @@ let longTermKeysProc() =
      new pskAB:bitstring; 
      event CompromisedPreSharedKey(PSK(pskAB));
      insert preSharedKeys(a,b,PSK(pskAB));
-     out(io,pskAB)).
+     out(io,pskAB))
+ |  (in(io, (a: prin, pkA:pubkey));
+     get longTermKeys( =a, skA, =pkA) in
+     new skD: privkey;
+     new edge: prin;
+     insert longTermKeys(edge, skD, pk(skD));
+     out(io, edge);
+     event DCIssued(pkA, pk(skD));
+     insert delegatedCredentials(a, pkA, edge, skD, StrongRSADecryption, sign(skA, hash(StrongHash, (pk(skD), StrongRSADecryption))))).
 
 const A,B,M: prin.
 let fixedLongTermKeys() = 
@@ -293,6 +311,8 @@ fun msg2bytes(msg):bitstring [data,typeConverter].
 fun CH(random,params):msg [data].
 fun SH(random,params):msg [data].
 fun CRT(pubkey):msg [data].
+fun DC(pubkey, rsa_alg, bitstring):msg [data].
+fun CRTD(pubkey, msg ): msg [data].
 fun SKE(group,element,bitstring):msg [data].
 fun CKE(bitstring): msg [data].
 fun CV(bitstring):msg [data].
@@ -409,24 +429,8 @@ let channelBindingQuery() =
 query cr:random, sr:random, 
       psk:preSharedKey,p:pubkey,o:params, m:params, 
       ck:ae_key, sk:ae_key, cb:bitstring, ms:bitstring;
-      event(ClientFinished(TLS12,cr,sr,psk,p,m,o,ck,sk,cb,ms)) ==>
-      event(ServerFinished(TLS12,cr,sr,psk,p,m,o,ck,sk,cb,ms)).
-
-query cr:random, sr:random, 
-      psk:preSharedKey,p:pubkey,o:params, m:params, 
-      ck:ae_key, sk:ae_key, cb:bitstring, ms:bitstring;
       event(ClientFinished(TLS13,cr,sr,psk,p,m,o,ck,sk,cb,ms)) ==>
       event(PreServerFinished(TLS13,cr,sr,psk,p,m,o,ck,sk,cb)).
-
-query cr:random, sr:random, 
-      psk:preSharedKey,p:pubkey,o:params, m:params, 
-      ck:ae_key, sk:ae_key, cb:bitstring, ms:bitstring;
-      event(ServerFinished(TLS12,cr,sr,psk,p,m,o,ck,sk,cb,ms)).
-
-query cr:random, sr:random, 
-      psk:preSharedKey,p:pubkey,o:params, m:params, 
-      ck:ae_key, sk:ae_key, cb:bitstring, ms:bitstring;
-      event(ClientFinished(TLS12,cr,sr,psk,p,m,o,ck,sk,cb,ms)).
 
 query cr:random, sr:random, 
       psk:preSharedKey,p:pubkey,o:params, m:params, 
@@ -445,116 +449,11 @@ query cr:random, sr:random,
 
 
 (********************************************************)
-(*  TLS 1.2 Processes: no client auth, DHE + RSA *)
-(********************************************************)
-
-let Client12() = 
-    (new cr:random;
-     in(io,offer:params);
-     out(io,CH(cr,offer));
-     in(io,SH(sr,mode));	
-     let nego(=TLS12,k,h,a,pt) = mode in
-     let v = TLS12 in
-     let log = (CH(cr,offer),SH(sr,mode)) in
-     in(io,CRT(p));
-     let log = (log,CRT(p)) in
-     get longTermKeys(sn,xxx,=p) in
-     let DHE(g) = k in
-      (in(io,SKE(=g,e,s));
-       let log = (log,SKE(g,e,s)) in
-       if verify(p,hash(h,(cr,sr,g,e)),s) = true then
-          let (x:bitstring,gx:element) = dh_keygen(g) in
-	  let pms = e2b(dh_exp(g,e,x)) in
-	  let ms = tls12_prf(pms,master_secret,(cr,sr)) in
-	  out(io,CKE(e2b(gx)));
-	  let log = (log,CKE(e2b(gx))) in
-	  let m1 = tls12_prf(ms,client_finished,log) in
-          out(io,FIN(m1));
-	  let log = (log,FIN(m1)) in
-	  in(io,FIN(m2));
-	  if m2 = tls12_prf(ms,server_finished,log) then
-	     let ck = b2ae(tls12_prf(ms,client_key_expansion,(sr,cr))) in
-	     let sk = b2ae(tls12_prf(ms,server_key_expansion,(sr,cr))) in
-	     event ClientFinished(TLS12,cr,sr,NoPSK,p,offer,mode,ck,sk,m1,ms);	 
-	     insert clientSession(cr,sr,NoPSK,p,offer,mode,ck,sk,m1,ms))
-    else let RSA(r) = k in
-      (new pms: bitstring;
-       let ms = tls12_prf(pms,master_secret,(cr,sr)) in
-       out(io,CKE(rsa_enc(p,pms)));
-       let log = (log,CKE(rsa_enc(p,pms))) in
-       let m1 = tls12_prf(ms,client_finished,log) in
-       out(io,FIN(m1));
-       let log = (log,FIN(m1)) in
-       in(io,FIN(m2));
-       if m2 = tls12_prf(ms,server_finished,log) then
-          let ck = b2ae(tls12_prf(ms,client_key_expansion,(sr,cr))) in
-          let sk = b2ae(tls12_prf(ms,server_key_expansion,(sr,cr))) in
-	  event ClientFinished(TLS12,cr,sr,NoPSK,p,offer,mode,ck,sk,m1,ms);	 
-	  insert clientSession(cr,sr,NoPSK,p,offer,mode,ck,sk,m1,ms))).
-
-    
-let Server12() = 
-    (in(io,CH(cr,offer));
-     in(io,SH(xxx,mode));
-     let nego(=TLS12,k,h,a,pt) = mode in
-     let v = TLS12 in
-     new sr:random;
-     out(io,SH(sr,mode));
-     let log = (CH(cr,offer),SH(sr,mode)) in
-     get longTermKeys(sn,sk,p) in
-     event ServerChoosesVersion(cr,sr,p,v);
-     event ServerChoosesKEX(cr,sr,p,v,k);
-     event ServerChoosesAE(cr,sr,p,v,a);
-     event ServerChoosesHash(cr,sr,p,v,h);
-     out(io,CRT(p));
-     let log = (log,CRT(p)) in
-     let DHE(g) = k in
-      (let (y:bitstring, gy:element) = dh_keygen(g) in
-       let sg = sign(sk,hash(h,(cr,sr,g,gy))) in
-       out(io,SKE(g,gy,sg));
-       let log = (log,SKE(g,gy,sg)) in
-       in (io,CKE(e2b(gx)));
-       let log = (log,CKE(e2b(gx))) in
-       let pms = e2b(dh_exp(g,gx,y)) in
-       let ms = tls12_prf(pms,master_secret,(cr,sr)) in
-       in(io,FIN(m1));
-       if m1 = tls12_prf(ms,client_finished,log) then
-	  let log = (log,FIN(m1)) in
-	  let m2 = tls12_prf(ms,server_finished,log) in
-          let cak = b2ae(tls12_prf(ms,client_key_expansion,(sr,cr))) in
-          let sak = b2ae(tls12_prf(ms,server_key_expansion,(sr,cr))) in
-	  event ServerFinished(TLS12,cr,sr,NoPSK,p,offer,mode,cak,sak,m1,ms);	 
-	  out (io,FIN(m2));
-	  insert serverSession(cr,sr,NoPSK,p,offer,mode,cak,sak,m1,ms);
- 	  phase 1; 
-          event PostSessionCompromisedKey(pk(sk));
-	  out(io,sk))
-    else let RSA(r) = k in
-      (in(io,CKE(epms));
-       let log = (log,CKE(epms)) in
-       let success(pms,leak) = rsa_dec(r,sk,epms) in
-       out (io,leak);
-       let ms = tls12_prf(pms,master_secret,(cr,sr)) in
-       in(io,FIN(m1));
-       if m1 = tls12_prf(ms,client_finished,log) then
-	  let log = (log,FIN(m1)) in
-	  let m2 = tls12_prf(ms,server_finished,log) in
-          let cak = b2ae(tls12_prf(ms,client_key_expansion,(sr,cr))) in
-          let sak = b2ae(tls12_prf(ms,server_key_expansion,(sr,cr))) in
-	  event ServerFinished(TLS12,cr,sr,NoPSK,p,offer,mode,cak,sak,m1,ms);	 
-	  out (io,FIN(m2));
-	  insert serverSession(cr,sr,NoPSK,p,offer,mode,cak,sak,m1,ms);
- 	  phase 1; 
-          event PostSessionCompromisedKey(pk(sk));
-	  out (io,sk))).
-
-
-(********************************************************)
 (*  TLS 1.3 0+1-RTT Processes: no client auth, uses psk (potentially NoPSK) *)
 (********************************************************)
 
    
-let Client13() = 
+let Client13DC() = 
     (get preSharedKeys(a,b,psk) in
      in (io,ioffer:params);
      let nego(=TLS13,DHE_13(g,eee),hhh,aaa,pt) = ioffer in
@@ -583,11 +482,12 @@ let Client13() =
          kdf_ms(handshake_secret,log) in 
      out(io,(chk,shk));
 
-     in(io,CRT(p));
-     let log = (log,CRT(p)) in
+     in(io,CRTD(p, DC(q, rsa_alg, sig)));
+     if verify(p, hash(h,(q, rsa_alg)), sig) = true then( 
+     let log = (log,CRTD(p, DC(q, rsa_alg, sig))) in
      get longTermKeys(sn,xxx,=p) in
      in(io,CV(s));
-     if verify(p,hash(h,log),s) = true then
+     if verify(q,hash(h,log),s) = true then
      let log = (log,CV(s)) in
      in(io,FIN(m1));
      if m1 = hmac(StrongHash,sfin,log) then (
@@ -599,10 +499,10 @@ let Client13() =
 
         event ClientFinished(TLS13,cr,sr,psk,p,offer,mode,cak,sak,ems,rms);
         insert clientSession(cr,sr,psk,p,offer,mode,cak,sak,ems,rms);
-        out(io,FIN(m2)))).
+        out(io,FIN(m2))))).
 
     
-let Server13() = 
+let Server13DC() = 
     (get preSharedKeys(a,b,psk) in
      in(io,ch:msg); 
      let CH(cr,offer) = ch in
@@ -621,7 +521,7 @@ let Server13() =
      let mode = nego(TLS13,DHE_13(g,gy),h,a,pt) in
      out(io,SH(sr,mode));
      let log = (ch,SH(sr,mode)) in
-     get longTermKeys(sn,sk,p) in
+     get delegatedCredentials(sn, p, en, skD, rsa_alg, signature) in
      event ServerChoosesVersion(cr,sr,p,TLS13);
      event ServerChoosesKEX(cr,sr,p,TLS13,DHE_13(g,gy));
      event ServerChoosesAE(cr,sr,p,TLS13,a);
@@ -633,9 +533,9 @@ let Server13() =
          kdf_ms(handshake_secret,log) in
      out(io,(chk,shk));
 
-     out(io,CRT(p));
-     let log = (log,CRT(p)) in
-     let sg = sign(sk,hash(h,log)) in
+     out(io,CRTD(p, DC(pk(skD), rsa_alg, signature)));
+     let log = (log,CRTD(p, DC(pk(skD), rsa_alg, signature))) in
+     let sg = sign(skD,hash(h,log)) in
      out(io,CV(sg));
      let log = (log,CV(sg)) in
      let m1 = hmac(StrongHash,sfin,log) in
@@ -654,8 +554,8 @@ let Server13() =
         event ServerFinished(TLS13,cr,sr,psk,p,offer,mode,cak,sak,ems,rms);	 
         insert serverSession(cr,sr,psk,p,offer,mode,cak,sak,ems,rms);
         phase 1; 
-        event PostSessionCompromisedKey(pk(sk));
-	out(io,sk)).
+        event PostSessionCompromisedKey(pk(skD));
+	out(io,skD)).
 (********************************************************)
 (*  Application Data Client and Server (+Record Layer) *)
 (********************************************************)

@@ -126,7 +126,7 @@ query cr:random, sr:random, cr':random, sr':random, psk:preSharedKey, e:element,
       event(ClientOffersAE(cr,WeakAE)).
 
 process (
-	 !Client13() | !Server13() | 
+	 !Client13DC() | !Server13DC() | 
 	 !longTermKeysProc() | !appData() |
 	 !secrecyQuery() | !channelBindingQuery() )
 
