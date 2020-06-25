@@ -1,5 +1,5 @@
 process (
-	 !Client13() | !Server13() | 
+	 !Client13DC() | !Server13DC() |
 	 !longTermKeysProc() | !appData() |
 	 !secrecyQuery() | !channelBindingQuery() )
 
